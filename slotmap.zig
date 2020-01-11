@@ -128,14 +128,6 @@ pub fn Slotmap(comptime T: type) type {
         pub fn toSliceConst(self: *Self) []const T {
             return self.data.toSlice()[0..self.len];
         }
-
-        pub fn log(self: *Self) void {
-            std.debug.warn("Slotmap({}) with {} items:\n", .{ @typeName(T), self.len });
-            std.debug.warn("\tnext_free: {}\n", .{self.next_free});
-            for (self.toSlice()) |item| {
-                std.debug.warn("\t{}\n", .{item});
-            }
-        }
     };
 }
 
