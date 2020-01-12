@@ -23,6 +23,7 @@ pub fn Slotmap(comptime T: type) type {
 
         slots: SlotList,
         data: TList,
+        erase: IndexList,
 
         next_free: u16,
         len: usize,
@@ -31,6 +32,7 @@ pub fn Slotmap(comptime T: type) type {
             return Self{
                 .slots = SlotList.init(allocator),
                 .data = TList.init(allocator),
+                .erase = IndexList.init(allocator),
                 .next_free = 0,
                 .len = 0,
             };
@@ -54,11 +56,12 @@ pub fn Slotmap(comptime T: type) type {
 
                 try self.slots.resize(new_capacity);
                 try self.data.resize(new_capacity);
+                try self.erase.resize(new_capacity);
 
                 // add new items to the freelist
                 for (self.slots.toSlice()[previous_last..self.slots.len]) |*slot, index| {
                     slot.index = @intCast(u16, index + previous_last) + 1;
-                    slot.salt = 0;
+                    slot.salt = 1;
                 }
             }
         }
@@ -69,24 +72,29 @@ pub fn Slotmap(comptime T: type) type {
             for (self.slots.toSlice()[self.next_free..self.slots.len]) |*slot, index| {
                 slot.index = @intCast(u16, index + 1);
                 slot.salt = slot.salt +% 1;
+                if (slot.salt == 0) {
+                    slot.salt = 1;
+                }
             }
         }
 
         pub fn insert(self: *Self, v: T) !Slot {
             try self.ensureCapacity(self.len + 1);
 
-            var redirect_index = self.next_free;
-            var redirect = self.slots.ptrAt(redirect_index);
+            var index_of_redirect = self.next_free;
+            var redirect = self.slots.ptrAt(index_of_redirect);
             self.next_free = redirect.index; // redirect.index points to the next free slot
 
-            redirect.index = redirect_index;
-            redirect.salt = redirect.salt +% 1;
-            var data = self.data.ptrAt(redirect_index);
-            data.* = v;
+            redirect.index = @intCast(u16, self.len);
+            self.data.set(redirect.index, v);
+            self.erase.set(redirect.index, index_of_redirect);
 
             self.len += 1;
 
-            return redirect.*;
+            return Slot{
+                .index = index_of_redirect,
+                .salt = redirect.salt,
+            };
         }
 
         pub fn remove(self: *Self, slot: Slot) !void {
@@ -95,13 +103,34 @@ pub fn Slotmap(comptime T: type) type {
             }
 
             var redirect = self.slots.ptrAt(slot.index);
-            if (slot.salt == redirect.salt) {
-                self.len -= 1;
-                redirect.index = self.next_free;
-                self.next_free = slot.index;
-            } else {
+            if (slot.salt != redirect.salt) {
+                std.debug.warn("{} {} {}\n", .{ slot, redirect, self });
                 return error.NOT_FOUND;
             }
+            var free_index = redirect.index;
+
+            self.len -= 1;
+
+            if (self.len > 0) {
+                var free_data = self.data.ptrAt(free_index);
+                var free_erase = self.erase.ptrAt(free_index);
+                var last_data = self.data.ptrAt(self.len);
+                var last_erase = self.erase.ptrAt(self.len);
+
+                free_data.* = last_data.*;
+                free_erase.* = last_erase.*;
+                self.slots.ptrAt(free_erase.*).index = free_index;
+            }
+
+            // Update the redirect after "self.slots.ptrAt(free_erase.*).index" was updated because
+            // if it happened to point to this redirect we want to avoid breaking the freelist
+            redirect.salt +%= 1;
+            if (redirect.salt == 0) {
+                redirect.salt = 1;
+            }
+            redirect.index = self.next_free;
+
+            self.next_free = slot.index;
         }
 
         pub fn getPtr(self: *Self, slot: Slot) !*T {
@@ -226,17 +255,18 @@ test "mixed insert and removal" {
     var map = Slotmap(i32).init(std.debug.global_allocator);
     try map.ensureCapacity(4);
 
-    {
+    var iterations: usize = 10;
+    while (iterations > 0) {
+        iterations -= 1;
+
         var slot0 = try map.insert(10);
         var slot1 = try map.insert(11);
         var slot2 = try map.insert(12);
         var slot3 = try map.insert(13);
         assert(map.len == 4);
-        assert(map.capacity() == 4);
 
         var slot4 = try map.insert(14);
         assert(map.len == 5);
-        assert(map.capacity() == 5);
 
         try map.remove(slot1);
         try map.remove(slot4);
@@ -253,39 +283,59 @@ test "mixed insert and removal" {
         var slot10 = try map.insert(20);
 
         assert(map.len == 7);
+        map.clear();
+    }
+}
+
+test "slices" {
+    var map = Slotmap(i32).init(std.debug.global_allocator);
+    try map.ensureCapacity(10);
+
+    var slots = [_]Slot{
+        try map.insert(0xDEAD1),
+        try map.insert(0xDEAD2),
+        try map.insert(0xDEAD3),
+        try map.insert(0xDEAD4),
+        try map.insert(0xDEAD5),
+        try map.insert(0xDEAD6),
+        try map.insert(0xDEAD7),
+        try map.insert(0xDEAD8),
+        try map.insert(0xDEAD9),
+        try map.insert(0xDEAD10),
+        try map.insert(0xDEAD11),
+    };
+
+    assert(map.len == 11);
+
+    for (slots) |slot, i| {
+        if (@mod(i, 2) == 0) {
+            try map.remove(slot);
+        } else {
+            var value = try map.getPtr(slot);
+            value.* = 0xBEEF;
+        }
     }
 
-    map.clear();
+    assert(map.len == 5);
 
-    {
-        var slot0 = try map.insert(10);
-        var slot1 = try map.insert(11);
-        var slot2 = try map.insert(12);
-        var slot3 = try map.insert(13);
-        assert(map.len == 4);
-        assert(map.capacity() == 7);
+    for (map.toSliceConst()) |value, i| {
+        assert(value == 0xBEEF);
+    }
 
-        var slot4 = try map.insert(14);
-        assert(map.len == 5);
-        assert(map.capacity() == 7);
+    for (slots) |slot, i| {
+        if (@mod(i, 2) == 1) {
+            try map.remove(slot);
+        }
+    }
 
-        try map.remove(slot1);
-        try map.remove(slot4);
+    for (slots) |*slot, i| {
+        slot.* = try map.insert(0x1337);
+    }
 
-        var slot5 = try map.insert(15);
-        var slot6 = try map.insert(16);
-        var slot7 = try map.insert(17);
-        var slot8 = try map.insert(18);
+    assert(map.len == 11);
 
-        assert(map.capacity() == 7);
-
-        try map.remove(slot5);
-        try map.remove(slot2);
-
-        var slot9 = try map.insert(19);
-        var slot10 = try map.insert(20);
-
-        assert(map.len == 7);
+    for (map.toSliceConst()) |value, i| {
+        assert(value == 0x1337);
     }
 }
 
@@ -304,11 +354,12 @@ test "stresstest" {
         var i: usize = 20000;
         while (i > 0) {
             var value = @intCast(i32, i) - 500;
-            try slots.append((try map.insert(value)));
+            var slot = try map.insert(value);
+            try slots.append(slot);
             i -= 1;
         }
 
-        i = 5000;
+        i = 15000;
         while (i > 0) {
             var index = @mod(rng.random.int(usize), slots.len);
             var slot = slots.swapRemove(index);
