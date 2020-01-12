@@ -1,20 +1,21 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 
-pub const Slot = struct {
-    index: u16 = 0,
-    salt: u16 = 0,
+pub fn Dense(comptime T: type) type {
+    return DenseCustomSlot(T, u16, u16);
+}
 
-    fn is_valid(slot: Slot) bool {
-        return slot.salt != 0;
-    }
+pub fn DenseCustomSlot(comptime T: type, comptime slot_index_type: type, comptime slot_salt_type: type) type {
+    // Both slot index and salt must be unsigned
+    const index_info = @typeInfo(slot_index_type);
+    assert(@as(builtin.TypeId, index_info) == builtin.TypeId.Int);
+    assert(!index_info.Int.is_signed);
 
-    fn is_equal(a: Slot, b: Slot) bool {
-        return a.index == b.index and a.salt == b.salt;
-    }
-};
+    const salt_info = @typeInfo(slot_salt_type);
+    assert(@as(builtin.TypeId, salt_info) == builtin.TypeId.Int);
+    assert(!salt_info.Int.is_signed);
 
-pub fn Slotmap(comptime T: type) type {
     return struct {
         const Self = @This();
         const SlotList = std.ArrayList(Slot);
@@ -25,8 +26,10 @@ pub fn Slotmap(comptime T: type) type {
         data: TList,
         erase: IndexList,
 
-        next_free: u16,
+        next_free: slot_index_type,
         len: usize,
+
+        pub const Slot = SlotType(slot_index_type, slot_salt_type);
 
         pub fn init(allocator: *std.mem.Allocator) Self {
             return Self{
@@ -49,7 +52,7 @@ pub fn Slotmap(comptime T: type) type {
         }
 
         pub fn ensureCapacity(self: *Self, new_capacity: usize) !void {
-            std.debug.assert(new_capacity < std.math.maxInt(u16));
+            std.debug.assert(new_capacity < std.math.maxInt(slot_index_type));
 
             if (self.slots.len < new_capacity) {
                 var previous_last = self.slots.len;
@@ -60,7 +63,7 @@ pub fn Slotmap(comptime T: type) type {
 
                 // add new items to the freelist
                 for (self.slots.toSlice()[previous_last..self.slots.len]) |*slot, index| {
-                    slot.index = @intCast(u16, index + previous_last) + 1;
+                    slot.index = @intCast(slot_index_type, index + previous_last) + 1;
                     slot.salt = 1;
                 }
             }
@@ -70,7 +73,7 @@ pub fn Slotmap(comptime T: type) type {
             self.next_free = 0;
             self.len = 0;
             for (self.slots.toSlice()[self.next_free..self.slots.len]) |*slot, index| {
-                slot.index = @intCast(u16, index + 1);
+                slot.index = @intCast(slot_index_type, index + 1);
                 slot.salt = slot.salt +% 1;
                 if (slot.salt == 0) {
                     slot.salt = 1;
@@ -85,7 +88,7 @@ pub fn Slotmap(comptime T: type) type {
             var redirect = self.slots.ptrAt(index_of_redirect);
             self.next_free = redirect.index; // redirect.index points to the next free slot
 
-            redirect.index = @intCast(u16, self.len);
+            redirect.index = @intCast(slot_index_type, self.len);
             self.data.set(redirect.index, v);
             self.erase.set(redirect.index, index_of_redirect);
 
@@ -160,10 +163,28 @@ pub fn Slotmap(comptime T: type) type {
     };
 }
 
+fn SlotType(comptime slot_index_type: type, comptime slot_salt_type: type) type {
+    return struct {
+        const Self = @This();
+
+        index: slot_index_type = 0,
+        salt: slot_salt_type = 0,
+
+        fn is_valid(slot: Self) bool {
+            return slot.salt != 0;
+        }
+
+        fn is_equal(a: Self, b: Self) bool {
+            return a.index == b.index and a.salt == b.salt;
+        }
+    };
+}
+
 test "slots" {
-    const invalid = Slot{};
-    const valid1 = Slot{ .index = 0, .salt = 1 };
-    const valid2 = Slot{ .index = 0, .salt = 1 };
+    const Slotmap = Dense(i32);
+    const invalid = Slotmap.Slot{};
+    const valid1 = Slotmap.Slot{ .index = 0, .salt = 1 };
+    const valid2 = Slotmap.Slot{ .index = 0, .salt = 1 };
 
     assert(!invalid.is_valid());
     assert(valid1.is_valid());
@@ -173,7 +194,7 @@ test "slots" {
 }
 
 test "basic inserts and growing" {
-    var map = Slotmap(i32).init(std.debug.global_allocator);
+    var map = Dense(i32).init(std.debug.global_allocator);
     assert(map.len == 0);
 
     try map.ensureCapacity(4);
@@ -229,7 +250,7 @@ test "basic inserts and growing" {
 }
 
 test "removal" {
-    var map = Slotmap(i32).init(std.debug.global_allocator);
+    var map = Dense(i32).init(std.debug.global_allocator);
     try map.ensureCapacity(6);
 
     var slot0 = try map.insert(10);
@@ -252,7 +273,7 @@ test "removal" {
 }
 
 test "mixed insert and removal" {
-    var map = Slotmap(i32).init(std.debug.global_allocator);
+    var map = Dense(i32).init(std.debug.global_allocator);
     try map.ensureCapacity(4);
 
     var iterations: usize = 10;
@@ -288,10 +309,11 @@ test "mixed insert and removal" {
 }
 
 test "slices" {
-    var map = Slotmap(i32).init(std.debug.global_allocator);
+    const MapType = Dense(i32);
+    var map = MapType.init(std.debug.global_allocator);
     try map.ensureCapacity(10);
 
-    var slots = [_]Slot{
+    var slots = [_]MapType.Slot{
         try map.insert(0xDEAD1),
         try map.insert(0xDEAD2),
         try map.insert(0xDEAD3),
@@ -343,8 +365,9 @@ test "stresstest" {
     var buffer: [1024 * 1024 * 4]u8 = undefined;
     const allocator = &std.heap.FixedBufferAllocator.init(&buffer).allocator;
 
-    var map = Slotmap(i32).init(allocator);
-    var slots = std.ArrayList(Slot).init(allocator);
+    const MapType = Dense(i32);
+    var map = MapType.init(allocator);
+    var slots = std.ArrayList(MapType.Slot).init(allocator);
     var rng = std.rand.DefaultPrng.init(0);
 
     var iterations: i32 = 100;
