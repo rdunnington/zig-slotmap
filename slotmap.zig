@@ -247,6 +247,8 @@ test "basic inserts and growing" {
     assert((try map.get(slot3)) == 13);
     assert((try map.get(slot4)) == 14);
     assert((try map.get(slot5)) == 15);
+
+    map.deinit();
 }
 
 test "removal" {
@@ -270,6 +272,8 @@ test "removal" {
     try map.remove(slot2);
     assert(map.len == 0);
     assert(map.capacity() == 6);
+
+    map.deinit();
 }
 
 test "mixed insert and removal" {
@@ -306,6 +310,8 @@ test "mixed insert and removal" {
         assert(map.len == 7);
         map.clear();
     }
+
+    map.deinit();
 }
 
 test "slices" {
@@ -359,6 +365,8 @@ test "slices" {
     for (map.toSliceConst()) |value, i| {
         assert(value == 0x1337);
     }
+
+    map.deinit();
 }
 
 test "stresstest" {
@@ -405,4 +413,6 @@ test "stresstest" {
             i -= 1;
         }
     }
+
+    map.deinit();
 }
