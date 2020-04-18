@@ -48,21 +48,21 @@ pub fn DenseCustomSlot(comptime T: type, comptime slot_index_type: type, comptim
         }
 
         pub fn capacity(self: *Self) usize {
-            return self.slots.len;
+            return self.slots.items.len;
         }
 
         pub fn ensureCapacity(self: *Self, new_capacity: usize) !void {
             std.debug.assert(new_capacity < std.math.maxInt(slot_index_type));
 
-            if (self.slots.len < new_capacity) {
-                var previous_last = self.slots.len;
+            if (self.slots.items.len < new_capacity) {
+                var previous_last = self.slots.items.len;
 
                 try self.slots.resize(new_capacity);
                 try self.data.resize(new_capacity);
                 try self.erase.resize(new_capacity);
 
                 // add new items to the freelist
-                for (self.slots.toSlice()[previous_last..self.slots.len]) |*slot, index| {
+                for (self.slots.items[previous_last..self.slots.items.len]) |*slot, index| {
                     slot.index = @intCast(slot_index_type, index + previous_last) + 1;
                     slot.salt = 1;
                 }
@@ -72,7 +72,7 @@ pub fn DenseCustomSlot(comptime T: type, comptime slot_index_type: type, comptim
         pub fn clear(self: *Self) void {
             self.next_free = 0;
             self.len = 0;
-            for (self.slots.toSlice()[self.next_free..self.slots.len]) |*slot, index| {
+            for (self.slots.items[self.next_free..self.slots.items.len]) |*slot, index| {
                 slot.index = @intCast(slot_index_type, index + 1);
                 slot.salt = slot.salt +% 1;
                 if (slot.salt == 0) {
@@ -85,12 +85,12 @@ pub fn DenseCustomSlot(comptime T: type, comptime slot_index_type: type, comptim
             try self.ensureCapacity(self.len + 1);
 
             var index_of_redirect = self.next_free;
-            var redirect = self.slots.ptrAt(index_of_redirect);
+            var redirect = &self.slots.items[index_of_redirect];
             self.next_free = redirect.index; // redirect.index points to the next free slot
 
             redirect.index = @intCast(slot_index_type, self.len);
-            self.data.set(redirect.index, v);
-            self.erase.set(redirect.index, index_of_redirect);
+            self.data.items[redirect.index] = v;
+            self.erase.items[redirect.index] = index_of_redirect;
 
             self.len += 1;
 
@@ -105,7 +105,7 @@ pub fn DenseCustomSlot(comptime T: type, comptime slot_index_type: type, comptim
                 return error.INVALID_PARAMETER;
             }
 
-            var redirect = self.slots.ptrAt(slot.index);
+            var redirect = &self.slots.items[slot.index];
             if (slot.salt != redirect.salt) {
                 std.debug.warn("{} {} {}\n", .{ slot, redirect, self });
                 return error.NOT_FOUND;
@@ -115,14 +115,14 @@ pub fn DenseCustomSlot(comptime T: type, comptime slot_index_type: type, comptim
             self.len -= 1;
 
             if (self.len > 0) {
-                var free_data = self.data.ptrAt(free_index);
-                var free_erase = self.erase.ptrAt(free_index);
-                var last_data = self.data.ptrAt(self.len);
-                var last_erase = self.erase.ptrAt(self.len);
+                var free_data = &self.data.items[free_index];
+                var free_erase = &self.erase.items[free_index];
+                var last_data = &self.data.items[self.len];
+                var last_erase = &self.erase.items[self.len];
 
                 free_data.* = last_data.*;
                 free_erase.* = last_erase.*;
-                self.slots.ptrAt(free_erase.*).index = free_index;
+                self.slots.items[free_erase.*].index = free_index;
             }
 
             // Update the redirect after "self.slots.ptrAt(free_erase.*).index" was updated because
@@ -141,9 +141,9 @@ pub fn DenseCustomSlot(comptime T: type, comptime slot_index_type: type, comptim
                 return error.INVALID_PARAMETER;
             }
 
-            const redirect = self.slots.ptrAt(slot.index);
+            const redirect = &self.slots.items[slot.index];
             if (slot.salt == redirect.salt) {
-                return self.data.ptrAt(redirect.index);
+                return &self.data.items[redirect.index];
             } else {
                 return error.NOT_FOUND;
             }
@@ -154,11 +154,11 @@ pub fn DenseCustomSlot(comptime T: type, comptime slot_index_type: type, comptim
         }
 
         pub fn toSlice(self: *Self) []T {
-            return self.data.toSlice()[0..self.len];
+            return self.data.items[0..self.len];
         }
 
         pub fn toSliceConst(self: *Self) []const T {
-            return self.data.toSlice()[0..self.len];
+            return self.data.items[0..self.len];
         }
     };
 }
@@ -194,7 +194,7 @@ test "slots" {
 }
 
 test "basic inserts and growing" {
-    var map = Dense(i32).init(std.debug.global_allocator);
+    var map = Dense(i32).init(std.testing.allocator);
     assert(map.len == 0);
 
     try map.ensureCapacity(4);
@@ -250,7 +250,7 @@ test "basic inserts and growing" {
 }
 
 test "removal" {
-    var map = Dense(i32).init(std.debug.global_allocator);
+    var map = Dense(i32).init(std.testing.allocator);
     try map.ensureCapacity(6);
 
     var slot0 = try map.insert(10);
@@ -273,7 +273,7 @@ test "removal" {
 }
 
 test "mixed insert and removal" {
-    var map = Dense(i32).init(std.debug.global_allocator);
+    var map = Dense(i32).init(std.testing.allocator);
     try map.ensureCapacity(4);
 
     var iterations: usize = 10;
@@ -310,7 +310,7 @@ test "mixed insert and removal" {
 
 test "slices" {
     const MapType = Dense(i32);
-    var map = MapType.init(std.debug.global_allocator);
+    var map = MapType.init(std.testing.allocator);
     try map.ensureCapacity(10);
 
     var slots = [_]MapType.Slot{
@@ -384,7 +384,7 @@ test "stresstest" {
 
         i = 15000;
         while (i > 0) {
-            var index = @mod(rng.random.int(usize), slots.len);
+            var index = @mod(rng.random.int(usize), slots.items.len);
             var slot = slots.swapRemove(index);
             try map.remove(slot);
             i -= 1;
@@ -397,9 +397,9 @@ test "stresstest" {
             i -= 1;
         }
 
-        i = slots.len;
+        i = slots.items.len;
         while (i > 0) {
-            var index = @mod(rng.random.int(usize), slots.len);
+            var index = @mod(rng.random.int(usize), slots.items.len);
             var slot = slots.swapRemove(index);
             try map.remove(slot);
             i -= 1;
