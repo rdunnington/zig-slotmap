@@ -9,12 +9,10 @@ pub fn Dense(comptime T: type) type {
 pub fn DenseCustomSlot(comptime T: type, comptime slot_index_type: type, comptime slot_salt_type: type) type {
     // Both slot index and salt must be unsigned
     const index_info = @typeInfo(slot_index_type);
-    assert(@as(builtin.TypeId, index_info) == builtin.TypeId.Int);
-    assert(!index_info.Int.is_signed);
+    assert(index_info.Int.signedness == .unsigned);
 
     const salt_info = @typeInfo(slot_salt_type);
-    assert(@as(builtin.TypeId, salt_info) == builtin.TypeId.Int);
-    assert(!salt_info.Int.is_signed);
+    assert(salt_info.Int.signedness == .unsigned);
 
     return struct {
         const Self = @This();
