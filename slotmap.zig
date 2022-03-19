@@ -29,7 +29,7 @@ pub fn DenseCustomSlot(comptime T: type, comptime slot_index_type: type, comptim
 
         pub const Slot = SlotType(slot_index_type, slot_salt_type);
 
-        pub fn init(allocator: *std.mem.Allocator) Self {
+        pub fn init(allocator: std.mem.Allocator) Self {
             return Self{
                 .slots = SlotList.init(allocator),
                 .data = TList.init(allocator),
@@ -105,7 +105,6 @@ pub fn DenseCustomSlot(comptime T: type, comptime slot_index_type: type, comptim
 
             var redirect = &self.slots.items[slot.index];
             if (slot.salt != redirect.salt) {
-                std.debug.warn("{} {} {}\n", .{ slot, redirect, self });
                 return error.NOT_FOUND;
             }
             var free_index = redirect.index;
@@ -282,10 +281,10 @@ test "mixed insert and removal" {
     while (iterations > 0) {
         iterations -= 1;
 
-        var slot0 = try map.insert(10);
+        _ = try map.insert(10);
         var slot1 = try map.insert(11);
         var slot2 = try map.insert(12);
-        var slot3 = try map.insert(13);
+        _ = try map.insert(13);
         assert(map.len == 4);
 
         var slot4 = try map.insert(14);
@@ -295,15 +294,15 @@ test "mixed insert and removal" {
         try map.remove(slot4);
 
         var slot5 = try map.insert(15);
-        var slot6 = try map.insert(16);
-        var slot7 = try map.insert(17);
-        var slot8 = try map.insert(18);
+        _ = try map.insert(16);
+        _ = try map.insert(17);
+        _ = try map.insert(18);
 
         try map.remove(slot5);
         try map.remove(slot2);
 
-        var slot9 = try map.insert(19);
-        var slot10 = try map.insert(20);
+        _ = try map.insert(19);
+        _ = try map.insert(20);
 
         assert(map.len == 7);
         map.clear();
@@ -344,7 +343,7 @@ test "slices" {
 
     assert(map.len == 5);
 
-    for (map.toSliceConst()) |value, i| {
+    for (map.toSliceConst()) |value| {
         assert(value == 0xBEEF);
     }
 
@@ -354,13 +353,13 @@ test "slices" {
         }
     }
 
-    for (slots) |*slot, i| {
+    for (slots) |*slot| {
         slot.* = try map.insert(0x1337);
     }
 
     assert(map.len == 11);
 
-    for (map.toSliceConst()) |value, i| {
+    for (map.toSliceConst()) |value| {
         assert(value == 0x1337);
     }
 
@@ -368,13 +367,14 @@ test "slices" {
 }
 
 test "stresstest" {
-    var buffer: [1024 * 1024 * 4]u8 = undefined;
-    const allocator = &std.heap.FixedBufferAllocator.init(&buffer).allocator;
+    const allocator = std.testing.allocator;
 
     const MapType = Dense(i32);
     var map = MapType.init(allocator);
     var slots = std.ArrayList(MapType.Slot).init(allocator);
+    defer slots.deinit();
     var rng = std.rand.DefaultPrng.init(0);
+    var random = rng.random();
 
     var iterations: i32 = 100;
     while (iterations > 0) {
@@ -390,7 +390,7 @@ test "stresstest" {
 
         i = 15000;
         while (i > 0) {
-            var index = @mod(rng.random.int(usize), slots.items.len);
+            var index = @mod(random.int(usize), slots.items.len);
             var slot = slots.swapRemove(index);
             try map.remove(slot);
             i -= 1;
@@ -405,7 +405,7 @@ test "stresstest" {
 
         i = slots.items.len;
         while (i > 0) {
-            var index = @mod(rng.random.int(usize), slots.items.len);
+            var index = @mod(random.int(usize), slots.items.len);
             var slot = slots.swapRemove(index);
             try map.remove(slot);
             i -= 1;
